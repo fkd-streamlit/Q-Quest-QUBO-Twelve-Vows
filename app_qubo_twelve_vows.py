@@ -1257,46 +1257,46 @@ if "best_k" in st.session_state:
 
         st.markdown(render_glass_message(oracle_text), unsafe_allow_html=True)
 
-st.subheader("📊 観測分布（サンプリング）")
-
-hist = pd.DataFrame({
-    "神": char_names,
-    "count": st.session_state["counts"]
-}).sort_values("count", ascending=False)
-
-fig_bar = go.Figure()
-
-fig_bar.add_trace(go.Bar(
-    x=hist["神"],
-    y=hist["count"],
-    marker=dict(
-        color="rgba(120,170,255,0.85)",
-        line=dict(color="rgba(255,255,255,0.4)", width=1)
+    st.subheader("📊 観測分布（サンプリング）")
+    
+    hist = pd.DataFrame({
+        "神": char_names,
+        "count": st.session_state["counts"]
+    }).sort_values("count", ascending=False)
+    
+    fig_bar = go.Figure()
+    
+    fig_bar.add_trace(go.Bar(
+        x=hist["神"],
+        y=hist["count"],
+        marker=dict(
+            color="rgba(120,170,255,0.85)",
+            line=dict(color="rgba(255,255,255,0.4)", width=1)
+        )
+    ))
+    
+    fig_bar.update_layout(
+        paper_bgcolor="rgba(6,8,18,1)",
+        plot_bgcolor="rgba(10,12,26,0.95)",
+        font=dict(color="rgba(245,245,255,0.95)"),
+        xaxis=dict(
+            tickangle=90,
+            gridcolor="rgba(255,255,255,0.05)"
+        ),
+        yaxis=dict(
+            gridcolor="rgba(255,255,255,0.08)"
+        ),
+        margin=dict(l=20, r=20, t=20, b=120),
+        height=420
     )
-))
-
-fig_bar.update_layout(
-    paper_bgcolor="rgba(6,8,18,1)",
-    plot_bgcolor="rgba(10,12,26,0.95)",
-    font=dict(color="rgba(245,245,255,0.95)"),
-    xaxis=dict(
-        tickangle=90,
-        gridcolor="rgba(255,255,255,0.05)"
-    ),
-    yaxis=dict(
-        gridcolor="rgba(255,255,255,0.08)"
-    ),
-    margin=dict(l=20, r=20, t=20, b=120),
-    height=420
-)
-
-st.plotly_chart(
-    fig_bar,
-    width="stretch",
-    config={
-        "displayModeBar": False
-    }
-)
+    
+    st.plotly_chart(
+        fig_bar,
+        width="stretch",
+        config={
+            "displayModeBar": False
+        }
+    )
 
     st.subheader("🧩 この神託が指している誓願（上位）")
     v_user = st.session_state["v_user"]
