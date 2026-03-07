@@ -217,6 +217,86 @@ table, thead, tbody, tr, td, th {
 .js-plotly-plot, .plotly, .plot-container {
   background: transparent !important;
 }
+/* ============================================================
+   File uploader fix : 白枠・白背景・薄い文字を黒UIへ寄せる
+   ============================================================ */
+
+/* 外枠 */
+div[data-testid="stFileUploader"]{
+  background: var(--panel) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 14px !important;
+  padding: 10px !important;
+}
+
+/* 内部ラッパ */
+div[data-testid="stFileUploader"] > div,
+div[data-testid="stFileUploader"] > div > div,
+div[data-testid="stFileUploader"] section,
+div[data-testid="stFileUploader"] section > div,
+div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"]{
+  background: var(--panel) !important;
+  border: 1px dashed rgba(255,255,255,0.22) !important;
+  border-radius: 12px !important;
+}
+
+/* Drag and drop file here の面 */
+div[data-testid="stFileUploader"] [data-baseweb="file-uploader"],
+div[data-testid="stFileUploader"] [data-baseweb="file-uploader"] > div,
+div[data-testid="stFileUploader"] [data-baseweb="file-uploader"] > div > div,
+div[data-testid="stFileUploader"] [role="button"]{
+  background: var(--panel) !important;
+  color: var(--text) !important;
+}
+
+/* 文字色 */
+div[data-testid="stFileUploader"] *,
+div[data-testid="stFileUploader"] label,
+div[data-testid="stFileUploader"] small,
+div[data-testid="stFileUploader"] span,
+div[data-testid="stFileUploader"] p{
+  color: var(--text) !important;
+}
+
+/* Drag and drop file here / Limit 200MB... */
+div[data-testid="stFileUploader"] p,
+div[data-testid="stFileUploader"] small,
+div[data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] *{
+  color: var(--muted) !important;
+}
+
+/* Browse files ボタン */
+div[data-testid="stFileUploader"] button{
+  background: var(--panel2) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 10px !important;
+}
+div[data-testid="stFileUploader"] button:hover{
+  filter: brightness(1.08);
+}
+
+/* アップロード済みファイル表示 */
+div[data-testid="stFileUploader"] [data-baseweb="tag"],
+div[data-testid="stFileUploader"] [data-baseweb="tag"] *{
+  background: rgba(14,18,32,0.96) !important;
+  color: var(--text) !important;
+  border-color: var(--line) !important;
+}
+
+/* 白背景のインライン指定を上書き */
+div[data-testid="stFileUploader"] [style*="background-color: rgb(255"],
+div[data-testid="stFileUploader"] [style*="background-color:rgb(255"],
+div[data-testid="stFileUploader"] [style*="background: rgb(255"],
+div[data-testid="stFileUploader"] [style*="background:rgb(255"],
+div[data-testid="stFileUploader"] [style*="#fff"],
+div[data-testid="stFileUploader"] [style*="#FFF"],
+div[data-testid="stFileUploader"] [style*="#ffffff"],
+div[data-testid="stFileUploader"] [style*="#FFFFFF"]{
+  background: var(--panel) !important;
+  background-color: var(--panel) !important;
+  color: var(--text) !important;
+}
 </style>
 """
 st.markdown(SPACE_CSS, unsafe_allow_html=True)
