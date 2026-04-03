@@ -186,7 +186,7 @@ Q-Quest-QUBO-Twelve-Vows-QR/
    - 配置場所: `./assets/images/characters/`
    - ファイル名は `CHAR_TO_VOW` の `IMAGE_FILE` 列で指定、または `CHAR_01.png` などの形式
 
-## 機能（app_qubo.py）
+## 機能
 
 ### 主な機能
 
