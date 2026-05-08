@@ -8,11 +8,9 @@ Q-Quest-QUBO : Quantum Shintaku (2026-03-05 spec)
 - 十二因縁 ↔ 12誓願（介入点） ↔ 12神（語り手）を一貫した説明線で接続
 - 12神の選択は one-hot QUBO（Simulated Annealing でサンプリング）
 
-Excel（統合）シート想定：
-1) 十二因縁と12誓願の統合
-2) 12神の本質・性格・3軸ベクトルとその説明
-3) 神と誓願の因果律マトリクス（距離ベース）
-4) 神と誓願の因果律マトリクス（意味ベース）
+追加機能：
+- 神託結果のQR共有（保存なし / APIなし / ワンタイム）
+- QRから開いた相手のスマホ/PCで、神・画像・誓願・格言・神託文を再表示
 """
 
 import math
@@ -21,15 +19,24 @@ import re
 import io
 import hashlib
 import zlib
+import json
+import base64
 from pathlib import Path
 from html import escape
-from typing import List, Dict, Optional
+from typing import List, Optional
+from urllib.parse import quote, unquote
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image
 import plotly.graph_objects as go
+
+try:
+    import qrcode
+except Exception:
+    qrcode = None
+
 
 # ============================================================
 # Streamlit config（必ず最初）
@@ -217,19 +224,14 @@ table, thead, tbody, tr, td, th {
 .js-plotly-plot, .plotly, .plot-container {
   background: transparent !important;
 }
-/* ============================================================
-   File uploader fix : 白枠・白背景・薄い文字を黒UIへ寄せる
-   ============================================================ */
 
-/* 外枠 */
+/* file uploader fixes */
 div[data-testid="stFileUploader"]{
   background: var(--panel) !important;
   border: 1px solid var(--line) !important;
   border-radius: 14px !important;
   padding: 10px !important;
 }
-
-/* 内部ラッパ */
 div[data-testid="stFileUploader"] > div,
 div[data-testid="stFileUploader"] > div > div,
 div[data-testid="stFileUploader"] section,
@@ -239,8 +241,6 @@ div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"]{
   border: 1px dashed rgba(255,255,255,0.22) !important;
   border-radius: 12px !important;
 }
-
-/* Drag and drop file here の面 */
 div[data-testid="stFileUploader"] [data-baseweb="file-uploader"],
 div[data-testid="stFileUploader"] [data-baseweb="file-uploader"] > div,
 div[data-testid="stFileUploader"] [data-baseweb="file-uploader"] > div > div,
@@ -248,8 +248,6 @@ div[data-testid="stFileUploader"] [role="button"]{
   background: var(--panel) !important;
   color: var(--text) !important;
 }
-
-/* 文字色 */
 div[data-testid="stFileUploader"] *,
 div[data-testid="stFileUploader"] label,
 div[data-testid="stFileUploader"] small,
@@ -257,15 +255,11 @@ div[data-testid="stFileUploader"] span,
 div[data-testid="stFileUploader"] p{
   color: var(--text) !important;
 }
-
-/* Drag and drop file here / Limit 200MB... */
 div[data-testid="stFileUploader"] p,
 div[data-testid="stFileUploader"] small,
 div[data-testid="stFileUploader"] [data-testid="stMarkdownContainer"] *{
   color: var(--muted) !important;
 }
-
-/* Browse files ボタン */
 div[data-testid="stFileUploader"] button{
   background: var(--panel2) !important;
   color: var(--text) !important;
@@ -275,31 +269,16 @@ div[data-testid="stFileUploader"] button{
 div[data-testid="stFileUploader"] button:hover{
   filter: brightness(1.08);
 }
-
-/* アップロード済みファイル表示 */
 div[data-testid="stFileUploader"] [data-baseweb="tag"],
 div[data-testid="stFileUploader"] [data-baseweb="tag"] *{
   background: rgba(14,18,32,0.96) !important;
   color: var(--text) !important;
   border-color: var(--line) !important;
 }
-
-/* 白背景のインライン指定を上書き */
-div[data-testid="stFileUploader"] [style*="background-color: rgb(255"],
-div[data-testid="stFileUploader"] [style*="background-color:rgb(255"],
-div[data-testid="stFileUploader"] [style*="background: rgb(255"],
-div[data-testid="stFileUploader"] [style*="background:rgb(255"],
-div[data-testid="stFileUploader"] [style*="#fff"],
-div[data-testid="stFileUploader"] [style*="#FFF"],
-div[data-testid="stFileUploader"] [style*="#ffffff"],
-div[data-testid="stFileUploader"] [style*="#FFFFFF"]{
-  background: var(--panel) !important;
-  background-color: var(--panel) !important;
-  color: var(--text) !important;
-}
 </style>
 """
 st.markdown(SPACE_CSS, unsafe_allow_html=True)
+
 
 # ============================================================
 # Constants
@@ -335,6 +314,7 @@ CATEGORIES = {
     "内的": ["静けさ","集中","覚悟","決意","勇気","強さ","柔軟性","寛容"],
     "時間": ["今","瞬間","過程","変化","進化","発展","循環","流れ"],
 }
+
 
 # ============================================================
 # Basic helpers
@@ -409,6 +389,61 @@ def softmax(x: np.ndarray, tau: float = 1.0) -> np.ndarray:
     e = np.exp(z)
     return e / np.sum(e)
 
+
+# ============================================================
+# QR helpers
+# ============================================================
+def encode_oracle_payload(payload: dict) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    comp = zlib.compress(raw, level=9)
+    return base64.urlsafe_b64encode(comp).decode("ascii").rstrip("=")
+
+
+def decode_oracle_payload(token: str) -> dict:
+    token = str(token or "").strip()
+    if not token:
+        return {}
+    pad = "=" * (-len(token) % 4)
+    comp = base64.urlsafe_b64decode(token + pad)
+    raw = zlib.decompress(comp)
+    return json.loads(raw.decode("utf-8"))
+
+
+def build_share_url(base_url: str, payload: dict) -> str:
+    token = encode_oracle_payload(payload)
+    base_url = (base_url or "").strip()
+    if not base_url:
+        base_url = "http://localhost:8501"
+    sep = "&" if "?" in base_url else "?"
+    return f"{base_url}{sep}oracle={quote(token)}"
+
+
+def make_qr_image_bytes(url: str):
+    """
+    Streamlit Cloudで安定するよう、QR画像をBytesIO(PNG)で返す
+    """
+    if qrcode is None:
+        return None
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+
+    # qrcodeのPilImageラッパー対策
+    if hasattr(img, "get_image"):
+        img = img.get_image()
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 # ============================================================
 # QUBO core
 # ============================================================
@@ -457,6 +492,7 @@ def sa_sample(Q: np.ndarray, num_reads=240, sweeps=420, t0=5.0, t1=0.2, seed=0):
         energies.append(E)
 
     return np.array(samples), np.array(energies)
+
 
 # ============================================================
 # Excel helpers
@@ -521,82 +557,209 @@ def pick_col(df: pd.DataFrame, candidates, sheet_name: str):
             return mp[nc]
     st.error(
         f"Excelシート『{sheet_name}』に必要な列が見つかりません。"
-        f"\n候補={candidates}\n検出列={list(df.columns)}"
+        f"\\n候補={candidates}\\n検出列={list(df.columns)}"
     )
     st.stop()
 
+
 # ============================================================
-# QUOTES helpers
+# QUOTES / Buddhist text helpers
 # ============================================================
-def load_quotes(quotes_df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    fallback = pd.DataFrame(
+def _quote_fallback() -> pd.DataFrame:
+    return pd.DataFrame(
         [
-            ("Q_0001", "成功は、自分の強みを活かすことから始まる。", "ピーター・ドラッカー", "ja"),
-            ("Q_0002", "困難な瞬間こそ、真の性格が現れる。", "アルフレッド・A・モンテパート", "ja"),
-            ("Q_0003", "幸福とは、自分自身を探す旅の中で見つけるものだ。", "リリアン・デュ・デュヴェル", "ja"),
+            ("Q_0001", "成功は、自分の強みを活かすことから始まる。", "ピーター・ドラッカー", "ja", "", "VOW_06", "挑戦,成長", "流", "", "格言", "行動", "fallback"),
+            ("Q_0002", "困難な瞬間こそ、真の性格が現れる。", "アルフレッド・A・モンテパート", "ja", "", "VOW_04", "行動,誠実", "誠", "", "格言", "行動", "fallback"),
+            ("Q_0003", "焦りを鎮めると、次にすべき一歩が見えてくる。", "Q-Quest", "ja", "", "VOW_02", "焦り,静けさ", "静", "", "創作", "内省", "fallback"),
         ],
-        columns=["QUOTE_ID", "QUOTE", "SOURCE", "LANG"],
+        columns=["QUOTE_ID", "QUOTE", "SOURCE", "LANG", "CHAR_ID", "VOW_ID", "SENSE_TAG", "AXIS_TAG", "STAGE_ID", "ATTR_TAG", "ROLE_TAG", "NOTES"],
     )
 
+
+def load_quotes(quotes_df: Optional[pd.DataFrame], source_sheet: str = "") -> pd.DataFrame:
+    """
+    QUOTES / Sheet2_FIXED などを、同じ列構造に正規化して読み込む。
+    新しいExcelでは、仏典側も QUOTE_ID, QUOTE, SOURCE, LANG, VOW_ID, SENSE_TAG... を持つため、
+    それらのメタデータを残して、悩み文・誓願・神との照合に使う。
+    """
+    fallback = _quote_fallback()
+
     if quotes_df is None or len(quotes_df) == 0:
+        fallback["SOURCE_SHEET"] = source_sheet or "fallback"
         return fallback
 
     try:
         cols = {norm_col(c): c for c in quotes_df.columns}
         qid = cols.get("QUOTE_ID") or cols.get("ID") or cols.get("Q_ID")
-        qt = cols.get("QUOTE") or cols.get("格言") or cols.get("言葉") or cols.get("テキスト")
+        qt = cols.get("QUOTE") or cols.get("格言") or cols.get("言葉") or cols.get("テキスト") or cols.get("本文")
         src = cols.get("SOURCE") or cols.get("出典") or cols.get("作者") or cols.get("出所")
-        lang = cols.get("LANG") or cols.get("LANGUAGE")
+        lang = cols.get("LANG") or cols.get("LANGUAGE") or cols.get("言語")
+        char_id = cols.get("CHAR_ID") or cols.get("神ID") or cols.get("キャラID")
+        vow_id = cols.get("VOW_ID") or cols.get("誓願ID") or cols.get("VOW")
+        sense = cols.get("SENSE_TAG") or cols.get("SENSE") or cols.get("感覚タグ") or cols.get("タグ")
+        axis = cols.get("AXIS_TAG") or cols.get("AXIS") or cols.get("軸タグ")
+        stage = cols.get("STAGE_ID") or cols.get("STAGE")
+        attr = cols.get("ATTR_TAG") or cols.get("ATTR") or cols.get("属性タグ")
+        role = cols.get("ROLE_TAG") or cols.get("ROLE") or cols.get("役割タグ")
+        notes = cols.get("NOTES") or cols.get("NOTE") or cols.get("備考")
 
         if not qt:
+            fallback["SOURCE_SHEET"] = source_sheet or "fallback"
             return fallback
 
-        use = []
-        for _, col in [("QUOTE_ID", qid), ("QUOTE", qt), ("SOURCE", src), ("LANG", lang)]:
-            if col:
-                use.append(col)
+        mapping = {
+            qid: "QUOTE_ID", qt: "QUOTE", src: "SOURCE", lang: "LANG", char_id: "CHAR_ID",
+            vow_id: "VOW_ID", sense: "SENSE_TAG", axis: "AXIS_TAG", stage: "STAGE_ID",
+            attr: "ATTR_TAG", role: "ROLE_TAG", notes: "NOTES",
+        }
+        use_cols = [c for c in mapping.keys() if c]
+        tmp = quotes_df[use_cols].copy().rename(columns={k: v for k, v in mapping.items() if k})
 
-        tmp = quotes_df[use].copy()
-        rename = {}
-        if qid:
-            rename[qid] = "QUOTE_ID"
-        if qt:
-            rename[qt] = "QUOTE"
-        if src:
-            rename[src] = "SOURCE"
-        if lang:
-            rename[lang] = "LANG"
-        tmp = tmp.rename(columns=rename)
-
-        if "LANG" not in tmp.columns:
-            tmp["LANG"] = "ja"
-        if "QUOTE_ID" not in tmp.columns:
-            tmp["QUOTE_ID"] = [f"Q_{i+1:04d}" for i in range(len(tmp))]
-        if "SOURCE" not in tmp.columns:
-            tmp["SOURCE"] = ""
-
+        for col in ["QUOTE_ID", "SOURCE", "LANG", "CHAR_ID", "VOW_ID", "SENSE_TAG", "AXIS_TAG", "STAGE_ID", "ATTR_TAG", "ROLE_TAG", "NOTES"]:
+            if col not in tmp.columns:
+                tmp[col] = ""
+        if "QUOTE_ID" in tmp.columns:
+            tmp["QUOTE_ID"] = tmp["QUOTE_ID"].astype(str).replace({"nan": ""})
+        tmp.loc[tmp["QUOTE_ID"].astype(str).str.strip() == "", "QUOTE_ID"] = [f"Q_{source_sheet or 'S'}_{i+1:04d}" for i in range(len(tmp))]
+        tmp["LANG"] = tmp["LANG"].astype(str).replace({"nan": ""}).str.strip()
+        tmp.loc[tmp["LANG"] == "", "LANG"] = "ja"
         tmp["QUOTE"] = tmp["QUOTE"].astype(str).str.strip()
         tmp = tmp[tmp["QUOTE"].str.len() > 0].reset_index(drop=True)
-        return tmp if len(tmp) > 0 else fallback
+        tmp["SOURCE_SHEET"] = source_sheet or ""
+        return tmp[["QUOTE_ID", "QUOTE", "SOURCE", "LANG", "CHAR_ID", "VOW_ID", "SENSE_TAG", "AXIS_TAG", "STAGE_ID", "ATTR_TAG", "ROLE_TAG", "NOTES", "SOURCE_SHEET"]]
     except Exception:
+        fallback["SOURCE_SHEET"] = source_sheet or "fallback"
         return fallback
 
 
-def pick_quotes_by_temperature(dfq: pd.DataFrame, lang: str, k: int, tau: float, seed: int) -> pd.DataFrame:
-    d = dfq.copy()
-    d["LANG"] = d["LANG"].astype(str).str.strip().str.lower()
-    lang = (lang or "ja").strip().lower()
-    pool = d[d["LANG"].str.contains(lang, na=False)]
-    if len(pool) < k:
-        pool = d
+def load_all_quote_sheets(sheets: dict) -> tuple[pd.DataFrame, list]:
+    """QUOTES と仏典用 Sheet2_FIXED を統合。将来 quote/格言/仏典 を含むシートも拾う。"""
+    frames = []
+    found = []
+    preferred = ["QUOTES", "Sheet2_FIXED", "仏典", "仏典格言", "BUDDHIST_QUOTES", "DHAMMAPADA"]
+    for name in preferred:
+        for sheet_name, df in sheets.items():
+            if norm_col(sheet_name) == norm_col(name) and sheet_name not in found:
+                frames.append(load_quotes(df, sheet_name))
+                found.append(sheet_name)
+    for sheet_name, df in sheets.items():
+        ns = str(sheet_name).strip().lower()
+        if sheet_name in found:
+            continue
+        if ("quote" in ns) or ("格言" in str(sheet_name)) or ("仏典" in str(sheet_name)) or ("dhammapada" in ns):
+            frames.append(load_quotes(df, sheet_name))
+            found.append(sheet_name)
+    if not frames:
+        return load_quotes(None, "fallback"), []
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates(subset=["QUOTE", "SOURCE"], keep="first").reset_index(drop=True)
+    return out, found
 
+
+def _split_tags(x) -> list:
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return []
+    s = str(x).replace("，", ",").replace("、", ",").replace("/", ",").replace("・", ",")
+    return [t.strip() for t in re.split(r"[,\s]+", s) if t.strip() and t.strip().lower() != "nan"]
+
+
+def quote_context_score(row, user_text: str, keywords: list, top_vow_ids: list, char_id: str, char_name: str) -> float:
+    """悩み文・抽出語・上位誓願・観測された神に近い格言ほど高得点にする。"""
+    q = str(row.get("QUOTE", ""))
+    meta_text = " ".join(str(row.get(c, "")) for c in ["SOURCE", "VOW_ID", "SENSE_TAG", "AXIS_TAG", "ATTR_TAG", "ROLE_TAG", "NOTES", "SOURCE_SHEET"])
+    hay = q + " " + meta_text
+    score = 0.0
+
+    row_vows = [to_vow_id(v) for v in _split_tags(row.get("VOW_ID", ""))]
+    for rank, vid in enumerate(top_vow_ids[:4]):
+        if vid in row_vows:
+            score += 8.0 - rank * 1.5
+
+    row_char = to_char_id(str(row.get("CHAR_ID", ""))) if str(row.get("CHAR_ID", "")).strip() else ""
+    if row_char and row_char == to_char_id(char_id):
+        score += 5.0
+    if char_name and char_name in hay:
+        score += 2.0
+
+    keys = [k for k in (keywords or []) if k]
+    for key in keys:
+        if key in hay:
+            score += 2.0
+        # 文字が少し重なるだけでも弱い共鳴として加点
+        common = set(key) & set(hay)
+        if len(common) >= max(2, min(4, len(set(key)))):
+            score += 0.35
+
+    # 仏典と一般格言を混ぜやすくする軽いボーナス
+    if "仏典" in hay or "Dhammapada" in hay:
+        score += 0.6
+
+    # 長すぎる格言だけに偏らない調整
+    score += max(0.0, 1.0 - abs(len(q) - 34) / 80.0)
+    return float(score)
+
+
+def pick_contextual_quotes(dfq: pd.DataFrame, user_text: str, keywords: list, top_vow_ids: list, char_id: str, char_name: str, k: int, tau: float, seed: int) -> pd.DataFrame:
+    if dfq is None or len(dfq) == 0:
+        return pd.DataFrame()
+    d = dfq.copy()
+    d["LANG"] = d["LANG"].astype(str).str.lower()
+    pool = d[d["LANG"].str.contains("ja", na=False)].copy()
+    if len(pool) < k:
+        pool = d.copy()
+    if len(pool) == 0:
+        return pool
+    pool["MATCH_SCORE"] = pool.apply(lambda r: quote_context_score(r, user_text, keywords, top_vow_ids, char_id, char_name), axis=1)
     rng = np.random.default_rng(seed)
-    s = pool["QUOTE"].astype(str).str.len().values.astype(float)
-    s = (s - s.mean()) / (s.std() + 1e-6)
-    s = -np.abs(s) + rng.normal(0, 0.35, size=len(pool))
-    p = softmax(s, tau=max(0.2, float(tau)))
+    jitter = rng.normal(0, 0.15, size=len(pool))
+    logits = pool["MATCH_SCORE"].to_numpy(float) + jitter
+    p = softmax(logits, tau=max(0.2, float(tau)))
     idx = rng.choice(np.arange(len(pool)), size=min(k, len(pool)), replace=False, p=p)
-    return pool.iloc[idx].copy().reset_index(drop=True)
+    picked = pool.iloc[idx].copy().sort_values("MATCH_SCORE", ascending=False).reset_index(drop=True)
+    return picked
+
+
+def compose_concern_answer(god_name: str, user_text: str, top_vow_title: str, r0, col_innen: str, col_modern: str, col_intervene: str, qpick: pd.DataFrame) -> str:
+    """複数の格言・仏典を絡め、ユーザーの悩みに返す短い神託文を生成する。"""
+    concern = (user_text or "").strip()
+    lines = []
+    lines.append(f"{god_name}が、あなたの悩みに応えます。")
+    if concern:
+        lines.append(f"\nあなたの言葉：\n「{concern}」")
+    lines.append(f"\n今もっとも響いている誓願は「{top_vow_title}」です。")
+    if r0 is not None:
+        lines.append(f"十二因縁では「{str(r0[col_innen])}」の段に近く、{str(r0[col_modern])}。")
+        lines.append(f"ここでの介入点は、{str(r0[col_intervene])}ことです。")
+
+    if qpick is not None and len(qpick) > 0:
+        lines.append("\n選ばれた言葉は、次のように響き合っています。")
+        for i, (_, row) in enumerate(qpick.iterrows(), start=1):
+            qt = str(row.get("QUOTE", "")).strip()
+            src = str(row.get("SOURCE", "")).strip()
+            if not qt:
+                continue
+            src_part = f"（{src}）" if src and src != "nan" else ""
+            lines.append(f"{i}. 「{qt}」{src_part}")
+
+        first = str(qpick.iloc[0].get("QUOTE", "")).strip()
+        second = str(qpick.iloc[1].get("QUOTE", "")).strip() if len(qpick) > 1 else ""
+        third = str(qpick.iloc[2].get("QUOTE", "")).strip() if len(qpick) > 2 else ""
+        lines.append("\n読み解き：")
+        if first:
+            lines.append("最初の言葉は、悩みを力で押し切るより、まず心の向きを整えることを示しています。")
+        if second:
+            lines.append("次の言葉は、焦りや迷いを否定せず、そこから一歩分だけ行動へ変換する合図です。")
+        if third:
+            lines.append("三つ目の言葉は、孤立して答えを出すのではなく、縁や対話の中で道を細く開くことを勧めています。")
+
+    lines.append("\n今日の小さな実践：")
+    lines.append("結論を急がず、いま最も小さくできる一歩を一つだけ選んでください。紙に一行で書き、今日中に終えられる大きさまで小さくすることが、この神託の実行です。")
+    return "\n".join(lines)
+
+
+def pick_quotes_by_temperature(dfq: pd.DataFrame, lang: str, k: int, tau: float, seed: int, keywords=None) -> pd.DataFrame:
+    # 互換用：旧呼び出しが残っても動くようにする
+    return pick_contextual_quotes(dfq, "", keywords or [], [], "", "", k, tau, seed)
 
 # ============================================================
 # Rendering helpers
@@ -665,6 +828,7 @@ def render_glass_message(text: str) -> str:
         "</div>"
     )
 
+
 # ============================================================
 # Text / keyword helpers
 # ============================================================
@@ -672,8 +836,8 @@ def extract_keywords(text: str, top_n: int = 6) -> List[str]:
     text = (text or "").strip()
     if not text:
         return []
-    cleaned = re.sub(r"[0-9０-９、。．,.!！?？\(\)\[\]{}「」『』\"'：:;／/\\\\\n\r\t]+", " ", text)
-    toks = [t.strip() for t in re.split(r"\s+", cleaned) if t.strip()]
+    cleaned = re.sub(r"[0-9０-９、。．,.!！?？\\(\\)\\[\\]{}「」『』\\\"'：:;／/\\\\\\n\\r\\t]+", " ", text)
+    toks = [t.strip() for t in re.split(r"\\s+", cleaned) if t.strip()]
     toks = [t for t in toks if len(t) >= 2 and t not in STOP_TOKENS]
     if not toks:
         return []
@@ -682,27 +846,70 @@ def extract_keywords(text: str, top_n: int = 6) -> List[str]:
 
 
 def text_to_vow_vec(text: str, vows_df: pd.DataFrame, vow_cols: List[str], ngram: int = 3) -> np.ndarray:
+    """
+    悩み文を12誓願ベクトルに変換する簡易版。
+    1) 誓願タイトル/サブタイトルとの文字共鳴
+    2) 悩みで頻出しやすい語の辞書
+    3) n-gram の弱い一致
+    を合成する。形態素解析なしで Streamlit Cloud でも軽く動く。
+    """
     text = (text or "").strip()
     if not text:
         return np.zeros(len(vow_cols), dtype=float)
 
     t = re.sub(r"\s+", "", text)
+    keywords = extract_keywords(text, top_n=12)
+    lower = text.lower()
+
+    # 誓願ごとの悩み語彙。必要に応じてExcel側に寄せて後で拡張可能。
+    lexicon = {
+        "VOW_01": ["迷い", "迷う", "決められ", "優先", "整理", "混乱", "ノイズ", "一本", "選べ"],
+        "VOW_02": ["焦り", "焦る", "不安", "怖い", "疲れ", "待て", "急ぎ", "落ち着", "余裕"],
+        "VOW_03": ["内面", "洞察", "気づ", "わから", "意味", "自分", "考え", "悩み", "もやもや"],
+        "VOW_04": ["行動", "一歩", "踏み出", "試す", "検証", "始め", "動け", "着手"],
+        "VOW_05": ["つながり", "相談", "孤独", "関係", "人間関係", "仲間", "対話", "縁"],
+        "VOW_06": ["挑戦", "学び", "成長", "未知", "失敗", "怖い", "新しい", "チャレンジ"],
+        "VOW_07": ["焦り", "迷い", "手放", "執着", "囚われ", "落ち着", "切り替え"],
+        "VOW_08": ["小さく", "少し", "一歩", "まず", "軽く", "試し", "できる", "今日"],
+        "VOW_09": ["つながり", "挑戦", "協力", "場", "チーム", "支え", "巻き込"],
+        "VOW_10": ["判断", "決断", "待つ", "時期", "タイミング", "急が", "保留", "機"],
+        "VOW_11": ["静けさ", "信頼", "安心", "つながり", "休む", "整える", "回復"],
+        "VOW_12": ["加速", "結果", "行動量", "期限", "進める", "突破", "やり切る", "勢い"],
+    }
+
+    # vows_df に TITLE/SUBTITLE があれば利用
+    docs = []
+    for _, row in vows_df.iterrows():
+        parts = []
+        for c in ["TITLE", "SUBTITLE", "VOW_ID_N"]:
+            if c in vows_df.columns:
+                parts.append(str(row.get(c, "")))
+        docs.append(re.sub(r"\s+", "", " ".join(parts)))
+
     n = max(1, int(ngram))
     grams = [t] if len(t) <= n else [t[i:i+n] for i in range(len(t)-n+1)]
-
     scores = np.zeros(len(vow_cols), dtype=float)
-    titles = vows_df["TITLE"].astype(str).tolist() if "TITLE" in vows_df.columns else []
-    for i, title in enumerate(titles[:len(vow_cols)]):
-        tt = re.sub(r"\s+", "", str(title))
-        hit = 0
+
+    for i, vid in enumerate(vow_cols):
+        vidn = to_vow_id(vid)
+        doc = docs[i] if i < len(docs) else ""
+        # 直接語彙一致
+        for w in lexicon.get(vidn, []):
+            if w and (w in text or w.lower() in lower):
+                scores[i] += 2.5
+        # キーワードと誓願説明の重なり
+        for kw in keywords:
+            if kw and kw in doc:
+                scores[i] += 1.5
+        # n-gram の弱い一致
         for g in grams:
-            if g and g in tt:
-                hit += 1
-        scores[i] = hit
+            if g and len(g) >= 2 and g in doc:
+                scores[i] += 0.4
 
     if scores.max() > 0:
         scores = scores / scores.max()
     return scores
+
 
 # ============================================================
 # Word sphere art
@@ -737,7 +944,7 @@ def energy_between(word1: str, word2: str, rng: np.random.Generator, jitter: flo
     return float(e)
 
 
-def build_word_network(center_words: List[str], n_total: int, rng: np.random.Generator, jitter: float) -> Dict:
+def build_word_network(center_words: List[str], n_total: int, rng: np.random.Generator, jitter: float):
     base = list(dict.fromkeys(center_words + GLOBAL_WORDS_DATABASE))
     energies = {}
     for w in base:
@@ -768,7 +975,7 @@ def build_word_network(center_words: List[str], n_total: int, rng: np.random.Gen
     return {"words": selected, "energies": {w: energies[w] for w in selected}, "edges": edges}
 
 
-def layout_sphere(words: List[str], energies: Dict[str, float], center_words: List[str], rng: np.random.Generator) -> np.ndarray:
+def layout_sphere(words: List[str], energies: dict, center_words: List[str], rng: np.random.Generator) -> np.ndarray:
     n = len(words)
     pos = np.zeros((n, 3), dtype=float)
     ga = np.pi * (3 - np.sqrt(5))
@@ -895,6 +1102,70 @@ def plot_word_sphere(center_words: List[str], user_keywords: List[str], seed: in
     )
     return fig
 
+
+# ============================================================
+# Shared result mode (QRから開いた場合)
+# ============================================================
+params = st.query_params
+oracle_token = params.get("oracle", "")
+
+if oracle_token:
+    try:
+        shared = decode_oracle_payload(unquote(str(oracle_token)))
+        st.title("🔮 共有された神託")
+        st.caption("QRコードから開かれた神託結果です。")
+
+        c1, c2 = st.columns([1, 2], gap="large")
+        with c1:
+            shared_god_name = str(shared.get("god_name", "")).strip()
+            shared_image_file = str(shared.get("image_file", "")).strip()
+            st.subheader(shared_god_name if shared_god_name else "観測された神")
+
+            if shared_image_file:
+                img_path = Path("assets/images/characters") / shared_image_file
+                if img_path.exists():
+                    try:
+                        st.image(Image.open(img_path), width=260)
+                    except Exception:
+                        st.info(f"画像はありますが読み込めませんでした: {img_path}")
+                else:
+                    st.info(f"画像ファイルが見つかりませんでした: {img_path}")
+
+        with c2:
+            shared_mode = str(shared.get("mode_label", "")).strip()
+            shared_ts = str(shared.get("timestamp", "")).strip()
+            shared_vow_title = str(shared.get("vow_title", "")).strip()
+            shared_oracle = str(shared.get("oracle_text", "")).strip()
+            shared_quote = str(shared.get("quote_text", "")).strip()
+            shared_source = str(shared.get("quote_source", "")).strip()
+
+            if shared_mode:
+                st.caption(f"方式: {shared_mode}")
+            if shared_ts:
+                st.caption(f"生成時刻: {shared_ts}")
+
+            if shared_vow_title:
+                st.markdown(f"### 🧩 誓願: {escape(shared_vow_title)}", unsafe_allow_html=True)
+
+            if shared_oracle:
+                st.subheader("💬 神託")
+                st.markdown(render_glass_message(shared_oracle), unsafe_allow_html=True)
+
+            if shared_quote:
+                st.subheader("📜 格言")
+                quote_display = f"「{shared_quote}」"
+                if shared_source:
+                    quote_display += f"\\n\\n— {shared_source}"
+                st.markdown(render_glass_message(quote_display), unsafe_allow_html=True)
+
+        st.info("この共有は保存を伴わないワンタイム表示です。")
+        st.stop()
+
+    except Exception as e:
+        st.error(f"共有URLの神託を復元できませんでした: {e}")
+        st.stop()
+
+
 # ============================================================
 # UI
 # ============================================================
@@ -916,12 +1187,24 @@ with st.sidebar:
     num_reads = st.slider("サンプル数", 50, 800, 240, 10)
     sweeps = st.slider("SA sweeps", 50, 1500, 420, 10)
     seed = st.number_input("乱数シード", min_value=0, max_value=999999, value=0, step=1)
+    quote_tau = st.slider("格言温度（高→多様 / 低→適合重視）", 0.2, 2.5, 0.9, 0.1)
+    quote_k = st.slider("絡める格言数", 2, 5, 3, 1)
+
+    st.header("📱 QR共有")
+    share_base_url = st.text_input(
+        "共有ベースURL",
+        value=st.session_state.get("share_base_url", ""),
+        placeholder="https://q-quest-quantum-oracle.streamlit.app",
+        help="公開後のアプリURLを入力してください。ローカル検証時は http://192.168.x.x:8501 のようにPCのIPを入れます。"
+    )
+    st.session_state["share_base_url"] = share_base_url
 
     run = st.button("🧪 QUBOで観測")
 
 if excel_file is None:
     st.info("左サイドバーから **統合Excel（20260305版）** をアップロードしてください。")
     st.stop()
+
 
 # ============================================================
 # Excel parse
@@ -945,53 +1228,24 @@ else:
     mat_candidates = [S_MAT_MEAN, "神と誓願の因果律マトリクス（意味ベース）"]
 name_mat, df_mat = find_sheet(sheets, mat_candidates)
 
-# QUOTESシート（任意）
-quotes_candidates = ["QUOTES", "QUOTE", "格言", "格言一覧", "Quotes", "quotes"]
-name_quotes, df_quotes_raw = find_sheet(sheets, quotes_candidates)
-
-if df_quotes_raw is None:
-    for sheet_name in sheets.keys():
-        sheet_name_clean = str(sheet_name).strip().lower()
-        if "quote" in sheet_name_clean or "格言" in sheet_name_clean:
-            name_quotes = sheet_name
-            df_quotes_raw = sheets[sheet_name]
-            break
-
-if df_quotes_raw is None:
-    try:
-        xls = pd.ExcelFile(io.BytesIO(excel_bytes))
-        for excel_sheet_name in xls.sheet_names:
-            excel_sheet_lower = str(excel_sheet_name).strip().lower()
-            excel_sheet_norm = norm_col(excel_sheet_name)
-            if "quote" in excel_sheet_lower or "格言" in str(excel_sheet_name) or "QUOTE" in excel_sheet_norm:
-                try:
-                    df_temp = pd.read_excel(io.BytesIO(excel_bytes), sheet_name=excel_sheet_name, engine="openpyxl")
-                    if df_temp is not None and len(df_temp) > 0:
-                        name_quotes = excel_sheet_name
-                        df_quotes_raw = df_temp
-                        sheets[excel_sheet_name] = df_temp
-                        break
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-if df_quotes_raw is None:
-    st.sidebar.warning("⚠️ QUOTESシートが見つかりません（任意）")
+# QUOTES / 仏典シート（任意）
+# 新Excelでは QUOTES に加え、Sheet2_FIXED に仏典（Dhammapada等）が入っている想定。
+df_quotes, quote_sheet_names = load_all_quote_sheets(sheets)
+if quote_sheet_names:
+    st.sidebar.success(f"✅ 言葉データを検出: {', '.join(quote_sheet_names)}")
 else:
-    st.sidebar.success(f"✅ QUOTESシートを検出: `{name_quotes}`")
+    st.sidebar.warning("⚠️ QUOTES/仏典シートが見つかりません。fallback格言を使います。")
 
 if df_innen is None or df_char3 is None or df_mat is None:
     st.error(
-        "必須シートが見つかりません。\n"
-        f"- innen={name_innen}, char3={name_char3}, mat={name_mat}\n"
+        "必須シートが見つかりません。\\n"
+        f"- innen={name_innen}, char3={name_char3}, mat={name_mat}\\n"
         f"- 検出シート: {list(sheets.keys())}"
     )
     st.stop()
 
-df_quotes = load_quotes(df_quotes_raw)
-if df_quotes_raw is not None and len(df_quotes) > 0:
-    st.sidebar.success(f"✅ QUOTESシート読み込み完了（{len(df_quotes)}件の格言）")
+if len(df_quotes) > 0:
+    st.sidebar.success(f"✅ 言葉データ読み込み完了（{len(df_quotes)}件）")
 
 # Innen columns
 col_vow_id = pick_col(df_innen, ["VOW_ID", "VOWID", "誓願ID", "誓願_ID", "誓願"], name_innen)
@@ -1058,6 +1312,7 @@ vow_dict = df_innen.drop_duplicates(subset=["VOW_ID_N"])[["VOW_ID_N", col_title,
 vow_title = {r["VOW_ID_N"]: str(r[col_title]) for _, r in vow_dict.iterrows()}
 vow_sub = {r["VOW_ID_N"]: str(r[col_subtitle]) for _, r in vow_dict.iterrows()}
 
+
 # ============================================================
 # Step0: text input
 # ============================================================
@@ -1072,27 +1327,36 @@ user_text = st.text_area(
 )
 st.session_state["user_text"] = user_text
 
-vow_dict_df = df_innen.drop_duplicates(subset=["VOW_ID_N"])[[col_title]].copy()
+vow_dict_df = df_innen.drop_duplicates(subset=["VOW_ID_N"])[["VOW_ID_N", col_title, col_subtitle]].copy()
 vow_dict_df["TITLE"] = vow_dict_df[col_title].astype(str)
-_ = text_to_vow_vec(user_text, vow_dict_df, vow_ids, ngram=3) if user_text else np.zeros(len(vow_ids), dtype=float)
+vow_dict_df["SUBTITLE"] = vow_dict_df[col_subtitle].astype(str)
+user_keywords = extract_keywords(user_text, top_n=8) if user_text else []
+v_text = text_to_vow_vec(user_text, vow_dict_df, vow_ids, ngram=3) if user_text else np.zeros(len(vow_ids), dtype=float)
+
 
 # ============================================================
 # Step1: 3-axis input
 # ============================================================
-st.subheader("① 3軸スライダー（顕↔密 / 智↔悲 / 和↔荒）")
+st.subheader("① 3軸スライダー")
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    a_exist = st.slider("存在：(-)顕 ↔ 密(+)", -1.0, 1.0, 0.0, 0.1)
+    st.markdown("**顕 ←→ 密**  \n現実・物質 ←→ 心・情報")
+    a_exist = st.slider(" ", -1.0, 1.0, 0.0, 0.1, key="axis1")
+
 with col2:
-    a_act = st.slider("作用：(-)智 ↔ 悲(+)", -1.0, 1.0, 0.0, 0.1)
+    st.markdown("**智 ←→ 悲**  \n内省・整理 ←→ 共感・つながり")
+    a_act = st.slider("  ", -1.0, 1.0, 0.0, 0.1, key="axis2")
+
 with col3:
-    a_soul = st.slider("魂：(-)和 ↔ 荒(+)", -1.0, 1.0, 0.0, 0.1)
+    st.markdown("**和 ←→ 荒**  \n安定・調和 ←→ 変化・打破")
+    a_soul = st.slider("   ", -1.0, 1.0, 0.0, 0.1, key="axis3")
 
 u = np.array([a_exist, a_act, a_soul], float)
 u_n = unit(u)
 
 st.caption("※3軸は「神の性格座標」です。ユーザーの現在地（気分/状態）を座標として入力します。")
+
 
 # ============================================================
 # Step2: 3-axis -> vows
@@ -1112,7 +1376,13 @@ vow_vecs = np.array(vow_vecs, float)
 
 v_need = np.array([cosine(u_n, vow_vecs[j]) for j in range(n_vows)], float)
 v_need01 = (v_need + 1.0) / 2.0
-v_user = normalize01(v_need01)
+v_axis = normalize01(v_need01)
+# 悩み文がある場合は、3軸ベクトルだけでなく、言葉から推定した誓願ベクトルも混ぜる。
+# これにより「ユーザーの悩みの単語ベクトル」→「格言/仏典選定」へつながる。
+if user_text and float(np.max(v_text)) > 0:
+    v_user = normalize01(0.60 * v_axis + 0.40 * v_text)
+else:
+    v_user = v_axis
 
 vow_table = []
 for j, vid in enumerate(vow_ids):
@@ -1127,8 +1397,8 @@ df_vpred = pd.DataFrame(vow_table).sort_values("need(0-1)", ascending=False)
 
 html_table_vpred = render_dataframe_as_html_table(df_vpred[["VOW_ID", "TITLE", "SUBTITLE", "need(0-1)"]])
 st.markdown(html_table_vpred, unsafe_allow_html=True)
-
 st.caption("※「誓願＝介入メニュー」。3軸の現在地から、今必要になりやすい誓願を推定しています。")
+
 
 # ============================================================
 # Step2.5: keyword sphere
@@ -1136,7 +1406,7 @@ st.caption("※「誓願＝介入メニュー」。3軸の現在地から、今�
 if user_text:
     st.subheader("🔍 キーワード抽出と球体アート")
 
-    kw = extract_keywords(user_text, top_n=6)
+    kw = user_keywords or extract_keywords(user_text, top_n=6)
     colA, colB = st.columns([1.0, 1.6], gap="large")
 
     with colA:
@@ -1170,6 +1440,7 @@ if user_text:
         else:
             st.info("キーワードが抽出できませんでした。")
 
+
 # ============================================================
 # Step3: vows -> god by QUBO
 # ============================================================
@@ -1187,11 +1458,11 @@ st.caption(f"ペナルティPの自動下限 P_min={P_min:.2f} を考慮し、�
 if run:
     samples, Es = sa_sample(Q, num_reads=num_reads, sweeps=sweeps, seed=int(seed))
     idxs = [onehot_index(x) for x in samples]
-    idxs = [k for k in idxs if k is not None]
+    idxs = [kk for kk in idxs if kk is not None]
 
     counts = np.zeros(len(char_names), int)
-    for k in idxs:
-        counts[k] += 1
+    for kk in idxs:
+        counts[kk] += 1
 
     valid = [(energy(Q, x), onehot_index(x)) for x in samples if onehot_index(x) is not None]
     if not valid:
@@ -1204,11 +1475,49 @@ if run:
         st.session_state["v_user"] = v_user
         st.session_state["score"] = score
 
+
 # ============================================================
 # Result
 # ============================================================
 if "best_k" in st.session_state:
     k = int(st.session_state["best_k"])
+    selected_quote_text = ""
+    selected_quote_source = ""
+    mode_label = "距離ベース（3軸の近さ）" if mat_mode.startswith("距離") else "意味ベース（ロア共鳴）"
+
+    v_user = st.session_state["v_user"]
+    score = st.session_state["score"]
+    contrib = W[k, :] * v_user
+    order = np.argsort(contrib)[::-1]
+    top_vid = vow_ids[order[0]]
+    top_vow_title = vow_title.get(top_vid, top_vid)
+    top_vow_ids = [vow_ids[i] for i in order[:4]]
+    r = df_innen[df_innen["VOW_ID_N"].astype(str) == str(top_vid)]
+    r0 = r.iloc[0] if len(r) >= 1 else None
+
+    quote_seed_base = (
+        (user_text or "")
+        + "|" + "|".join(top_vow_ids)
+        + f"|{char_names[k]}|{quote_tau:.3f}|{seed}"
+    )
+    quote_seed = make_seed(quote_seed_base)
+    qpick_context = pick_contextual_quotes(
+        df_quotes,
+        user_text=user_text,
+        keywords=user_keywords,
+        top_vow_ids=top_vow_ids,
+        char_id=str(df_mat[col_m_char_id].iloc[k]),
+        char_name=str(char_names[k]),
+        k=int(quote_k),
+        tau=float(quote_tau),
+        seed=quote_seed,
+    )
+    if len(qpick_context) > 0:
+        selected_quote_text = str(qpick_context.iloc[0].get("QUOTE", "")).strip()
+        selected_quote_source = str(qpick_context.iloc[0].get("SOURCE", "")).strip()
+        if selected_quote_source == "nan":
+            selected_quote_source = ""
+
     st.markdown("---")
     st.subheader("🌟 観測された神（QUBO解）")
 
@@ -1228,8 +1537,8 @@ if "best_k" in st.session_state:
         ax = char_axes[k]
         st.write("**3軸（神の性格）**")
         st.write(
-            f"- 存在（顕↔密）: {ax[0]:+.1f}\n"
-            f"- 作用（智↔悲）: {ax[1]:+.1f}\n"
+            f"- 存在（顕↔密）: {ax[0]:+.1f}\\n"
+            f"- 作用（智↔悲）: {ax[1]:+.1f}\\n"
             f"- 魂（和↔荒）: {ax[2]:+.1f}"
         )
         if char_tips[k]:
@@ -1237,35 +1546,27 @@ if "best_k" in st.session_state:
             st.write(char_tips[k])
 
     with col_oracle:
-        st.subheader("💬 神託（観測された神からのメッセージ）")
-        v_user = st.session_state["v_user"]
-        score = st.session_state["score"]
-        contrib = W[k, :] * v_user
-        order = np.argsort(contrib)[::-1]
-        top_vid = vow_ids[order[0]]
-        top_vow_title = vow_title.get(top_vid, top_vid)
-
-        oracle_text = f"{char_names[k]}が語る：\n\n"
-        oracle_text += f"「{top_vow_title}」という誓願が、今のあなたに響いています。\n\n"
-
-        r = df_innen[df_innen["VOW_ID_N"].astype(str) == str(top_vid)]
-        if len(r) >= 1:
-            r0 = r.iloc[0]
-            oracle_text += f"十二因縁の「{str(r0[col_innen])}」の段にいます。\n"
-            oracle_text += f"この段で起きがちなこと：{str(r0[col_modern])}\n\n"
-            oracle_text += f"介入点：{str(r0[col_intervene])}"
-
+        st.subheader("💬 悩みに応える神託（複数の格言・仏典を統合）")
+        oracle_text = compose_concern_answer(
+            god_name=str(char_names[k]),
+            user_text=user_text,
+            top_vow_title=str(top_vow_title),
+            r0=r0,
+            col_innen=col_innen,
+            col_modern=col_modern,
+            col_intervene=col_intervene,
+            qpick=qpick_context,
+        )
         st.markdown(render_glass_message(oracle_text), unsafe_allow_html=True)
 
     st.subheader("📊 観測分布（サンプリング）")
-    
+
     hist = pd.DataFrame({
         "神": char_names,
         "count": st.session_state["counts"]
     }).sort_values("count", ascending=False)
-    
+
     fig_bar = go.Figure()
-    
     fig_bar.add_trace(go.Bar(
         x=hist["神"],
         y=hist["count"],
@@ -1274,7 +1575,6 @@ if "best_k" in st.session_state:
             line=dict(color="rgba(255,255,255,0.4)", width=1)
         )
     ))
-    
     fig_bar.update_layout(
         paper_bgcolor="rgba(6,8,18,1)",
         plot_bgcolor="rgba(10,12,26,0.95)",
@@ -1289,13 +1589,10 @@ if "best_k" in st.session_state:
         margin=dict(l=20, r=20, t=20, b=120),
         height=420
     )
-    
     st.plotly_chart(
         fig_bar,
         width="stretch",
-        config={
-            "displayModeBar": False
-        }
+        config={"displayModeBar": False}
     )
 
     st.subheader("🧩 この神託が指している誓願（上位）")
@@ -1317,29 +1614,12 @@ if "best_k" in st.session_state:
     st.markdown(render_dataframe_as_html_table(df_top_vows), unsafe_allow_html=True)
 
     if len(df_quotes) > 0:
-        st.subheader("📜 QUOTES神託（温度付きで選択）")
-        quote_tau = st.slider("格言温度（高→ランダム / 低→上位固定）", 0.2, 2.5, 1.2, 0.1, key="quote_tau")
-
-        if "last_quote_tau" not in st.session_state:
-            st.session_state["last_quote_tau"] = quote_tau
-            st.session_state["quote_seed_offset"] = 0
-
-        if abs(st.session_state.get("last_quote_tau", quote_tau) - quote_tau) > 0.05:
-            st.session_state["quote_seed_offset"] = st.session_state.get("quote_seed_offset", 0) + 1
-            st.session_state["last_quote_tau"] = quote_tau
-
-        quote_seed_base = (
-            (user_text or "")
-            + f"|quotes_temp|{quote_tau:.3f}|{seed}|offset_{st.session_state.get('quote_seed_offset', 0)}"
-        )
-        quote_seed = make_seed(quote_seed_base)
-
-        qpick_temp = pick_quotes_by_temperature(
-            df_quotes, lang="ja", k=3, tau=quote_tau, seed=quote_seed
-        )
-
-        if len(qpick_temp) > 0:
-            for _, row in qpick_temp.iterrows():
+        st.subheader("📜 選ばれた格言・仏典（悩み文×誓願×神で選定）")
+        st.caption("※上位誓願、抽出キーワード、観測された神、VOW_ID/SENSE_TAG/ATTR_TAG を使って選んでいます。")
+        if len(qpick_context) > 0:
+            show_cols = [c for c in ["QUOTE", "SOURCE", "VOW_ID", "SENSE_TAG", "ATTR_TAG", "ROLE_TAG", "SOURCE_SHEET", "MATCH_SCORE"] if c in qpick_context.columns]
+            st.markdown(render_dataframe_as_html_table(qpick_context[show_cols]), unsafe_allow_html=True)
+            for _, row in qpick_context.iterrows():
                 quote_text = str(row.get("QUOTE", "")).strip()
                 source_text = str(row.get("SOURCE", "")).strip()
                 if quote_text:
@@ -1348,7 +1628,7 @@ if "best_k" in st.session_state:
                         quote_display += f"\n\n— {source_text}"
                     st.markdown(render_glass_message(quote_display), unsafe_allow_html=True)
         else:
-            st.info("QUOTES神託が見つかりませんでした。")
+            st.info("悩みに合う言葉が見つかりませんでした。")
 
     st.subheader("📜 十二因縁（診断）→ 誓願（介入）→ 神（語り手）")
     if len(r) >= 1:
@@ -1363,12 +1643,47 @@ if "best_k" in st.session_state:
     st.subheader("🧠 QUBO 証拠（one-hot）")
     x = [1 if i == k else 0 for i in range(len(char_names))]
     st.code(
-        f"E(x)=ΣE_i x_i + P(Σx-1)^2\n"
-        f"P={st.session_state['P']:.2f}\n"
-        f"linear_E(=-score)={np.round((-score), 3).tolist()}\n"
+        f"E(x)=ΣE_i x_i + P(Σx-1)^2\\n"
+        f"P={st.session_state['P']:.2f}\\n"
+        f"linear_E(=-score)={np.round((-score), 3).tolist()}\\n"
         f"x={x}",
         language="text",
     )
+
+    st.subheader("📱 神託をQRで共有")
+    share_url = ""
+    payload = {
+        "god_name": str(char_names[k]),
+        "image_file": str(img_files[k]),
+        "vow_title": str(top_vow_title),
+        "oracle_text": oracle_text,
+        "quote_text": selected_quote_text,
+        "quote_source": selected_quote_source,
+        "mode_label": mode_label,
+        "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    qr_buf = None
+    if share_base_url.strip():
+        share_url = build_share_url(share_base_url.strip(), payload)
+        qr_buf = make_qr_image_bytes(share_url)
+
+    st.caption("※ 共有ベースURLに公開URLを設定すると、神託結果をQRでスマホ表示できます。")
+    st.text_input("共有URL", value=share_url, key="share_url_display")
+
+    q1, q2 = st.columns([1, 1.4])
+    with q1:
+        if qr_buf is not None:
+            st.image(qr_buf, caption="このQRをスマホで読み取ると神託結果を表示します。", width=260)
+        else:
+            st.info("サイドバーの『共有ベースURL』に公開URLを入れるとQRが表示されます。")
+    with q2:
+        st.markdown(render_glass_message(
+            f"共有内容\\n"
+            f"- 神: {char_names[k]}\\n"
+            f"- 誓願: {top_vow_title}\\n"
+            f"- 格言: {selected_quote_text or '（なし）'}"
+        ), unsafe_allow_html=True)
 
 else:
     st.info("左サイドバーで設定して、**🧪 QUBOで観測** を押してください。")
