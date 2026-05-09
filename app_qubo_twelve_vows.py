@@ -283,6 +283,7 @@ st.markdown(SPACE_CSS, unsafe_allow_html=True)
 # ============================================================
 # Constants
 # ============================================================
+DEFAULT_SHARE_BASE_URL = "https://q-quest-twelve-vows.streamlit.app/"
 S_INNEN = "十二因縁と12誓願の統合"
 S_CHAR3 = "12神の本質・性格・3軸ベクトルとその説明"
 S_MAT_DIST = "神と誓願の因果律マトリクス（距離ベース） "
@@ -411,9 +412,12 @@ def decode_oracle_payload(token: str) -> dict:
 
 def build_share_url(base_url: str, payload: dict) -> str:
     token = encode_oracle_payload(payload)
-    base_url = (base_url or "").strip()
-    if not base_url:
-        base_url = "http://localhost:8501"
+    base_url = (base_url or "").strip() or DEFAULT_SHARE_BASE_URL
+
+    # 入力欄に既に ?oracle=... が残っていても、ベースURLだけに戻す
+    base_url = re.sub(r"[?&]oracle=.*$", "", base_url).strip()
+
+    # 末尾スラッシュはあってもなくてもよい。クエリの付け方だけ安全にする
     sep = "&" if "?" in base_url else "?"
     return f"{base_url}{sep}oracle={quote(token)}"
 
@@ -1208,10 +1212,12 @@ with st.sidebar:
     st.header("📱 QR共有")
     share_base_url = st.text_input(
         "共有ベースURL",
-        value=st.session_state.get("share_base_url", ""),
-        placeholder="https://q-quest-quantum-oracle.streamlit.app",
-        help="公開後のアプリURLを入力してください。ローカル検証時は http://192.168.x.x:8501 のようにPCのIPを入れます。"
+        value=st.session_state.get("share_base_url", DEFAULT_SHARE_BASE_URL),
+        placeholder=DEFAULT_SHARE_BASE_URL,
+        help="公開後のアプリURLです。通常はこのままでOKです。別URLで公開した場合だけ変更してください。"
     )
+    # 入力欄に共有URL全体（?oracle=...付き）を貼っても、ベースURLだけ保存する
+    share_base_url = re.sub(r"[?&]oracle=.*$", "", str(share_base_url or DEFAULT_SHARE_BASE_URL)).strip() or DEFAULT_SHARE_BASE_URL
     st.session_state["share_base_url"] = share_base_url
 
     run = st.button("🧪 QUBOで観測")
@@ -1669,28 +1675,29 @@ if "best_k" in st.session_state:
 
     # QRはURL自体にデータを埋め込む方式のため、神託全文をそのまま入れると容量超過しやすい。
     # 画面上には全文を表示し、QR共有には短縮版を入れる。
-    qr_oracle_text = shorten_for_qr(oracle_text, max_chars=650)
-    qr_quote_text = shorten_for_qr(selected_quote_text, max_chars=180)
-    qr_quote_source = shorten_for_qr(selected_quote_source, max_chars=80)
+    # スマホのQRリーダーで確実に開けるよう、QR用payloadはかなり軽量化する。
+    # 画面上の神託本文は全文表示、QR共有では「要約版」を表示する。
+    qr_oracle_text = shorten_for_qr(oracle_text, max_chars=320)
+    qr_quote_text = shorten_for_qr(selected_quote_text, max_chars=90)
+    qr_quote_source = shorten_for_qr(selected_quote_source, max_chars=40)
 
     payload = {
-        "god_name": str(char_names[k]),
-        "image_file": str(img_files[k]),
-        "vow_title": str(top_vow_title),
+        "god_name": str(char_names[k])[:30],
+        "vow_title": str(top_vow_title)[:40],
         "oracle_text": qr_oracle_text,
         "quote_text": qr_quote_text,
         "quote_source": qr_quote_source,
-        "mode_label": mode_label,
-        "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
     }
 
-    # 空欄でもローカル確認用URLでQRを作る。公開時はサイドバーにStreamlit URLを入れる。
-    share_base_url_effective = share_base_url.strip() or "http://localhost:8501"
+    # 公開URLを既定値にする。スマホ共有では localhost を使わない。
+    share_base_url_effective = str(share_base_url or DEFAULT_SHARE_BASE_URL).strip() or DEFAULT_SHARE_BASE_URL
     share_url = build_share_url(share_base_url_effective, payload)
     qr_buf = make_qr_image_bytes(share_url)
 
-    st.caption("※ 公開後は、サイドバーの『共有ベースURL』に Streamlit Cloud の公開URLを入れてください。空欄時はローカル確認用URLでQRを作ります。")
-    st.text_input("共有URL", value=share_url, key="share_url_display")
+    st.caption("※ QR共有では、サイドバーの『共有ベースURL』を使ってURLを作ります。")
+    st.code(share_url, language="text")
+    st.caption(f"共有URL文字数: {len(share_url)} 文字（スマホ読取安定のため軽量化済み）")
 
     q1, q2 = st.columns([1, 1.4])
     with q1:
