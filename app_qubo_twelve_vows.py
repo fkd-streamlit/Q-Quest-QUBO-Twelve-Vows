@@ -418,30 +418,45 @@ def build_share_url(base_url: str, payload: dict) -> str:
     return f"{base_url}{sep}oracle={quote(token)}"
 
 
+def shorten_for_qr(text: str, max_chars: int = 650) -> str:
+    """
+    QRはURLに全情報を埋め込むため、長文をそのまま入れると容量上限に達します。
+    共有表示用には要点を残して短縮します。
+    """
+    text = str(text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n\n……（共有用に一部を短縮表示）"
+
+
 def make_qr_image_bytes(url: str):
     """
-    Streamlit Cloudで安定するよう、QR画像をBytesIO(PNG)で返す
+    Streamlit Cloudで安定するよう、QR画像をBytesIO(PNG)で返す。
+    長めのURLにも対応しやすいよう、誤り訂正はLにする。
     """
     if qrcode is None:
         return None
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
-        border=2,
-    )
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
+    try:
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=7,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
 
-    # qrcodeのPilImageラッパー対策
-    if hasattr(img, "get_image"):
-        img = img.get_image()
+        # qrcodeのPilImageラッパー対策
+        if hasattr(img, "get_image"):
+            img = img.get_image()
 
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -1651,38 +1666,47 @@ if "best_k" in st.session_state:
     )
 
     st.subheader("📱 神託をQRで共有")
-    share_url = ""
+
+    # QRはURL自体にデータを埋め込む方式のため、神託全文をそのまま入れると容量超過しやすい。
+    # 画面上には全文を表示し、QR共有には短縮版を入れる。
+    qr_oracle_text = shorten_for_qr(oracle_text, max_chars=650)
+    qr_quote_text = shorten_for_qr(selected_quote_text, max_chars=180)
+    qr_quote_source = shorten_for_qr(selected_quote_source, max_chars=80)
+
     payload = {
         "god_name": str(char_names[k]),
         "image_file": str(img_files[k]),
         "vow_title": str(top_vow_title),
-        "oracle_text": oracle_text,
-        "quote_text": selected_quote_text,
-        "quote_source": selected_quote_source,
+        "oracle_text": qr_oracle_text,
+        "quote_text": qr_quote_text,
+        "quote_source": qr_quote_source,
         "mode_label": mode_label,
         "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    qr_buf = None
-    if share_base_url.strip():
-        share_url = build_share_url(share_base_url.strip(), payload)
-        qr_buf = make_qr_image_bytes(share_url)
+    # 空欄でもローカル確認用URLでQRを作る。公開時はサイドバーにStreamlit URLを入れる。
+    share_base_url_effective = share_base_url.strip() or "http://localhost:8501"
+    share_url = build_share_url(share_base_url_effective, payload)
+    qr_buf = make_qr_image_bytes(share_url)
 
-    st.caption("※ 共有ベースURLに公開URLを設定すると、神託結果をQRでスマホ表示できます。")
+    st.caption("※ 公開後は、サイドバーの『共有ベースURL』に Streamlit Cloud の公開URLを入れてください。空欄時はローカル確認用URLでQRを作ります。")
     st.text_input("共有URL", value=share_url, key="share_url_display")
 
     q1, q2 = st.columns([1, 1.4])
     with q1:
-        if qr_buf is not None:
-            st.image(qr_buf, caption="このQRをスマホで読み取ると神託結果を表示します。", width=260)
+        if qrcode is None:
+            st.warning("QR生成ライブラリ qrcode が見つかりません。requirements.txt に qrcode[pil] を追加してください。")
+        elif qr_buf is not None:
+            st.image(qr_buf.getvalue(), caption="このQRをスマホで読み取ると神託結果を表示します。", width=260)
         else:
-            st.info("サイドバーの『共有ベースURL』に公開URLを入れるとQRが表示されます。")
+            st.warning("QRを生成できませんでした。神託文が長すぎる可能性があります。共有用の文字数をさらに短くしてください。")
     with q2:
         st.markdown(render_glass_message(
-            f"共有内容\\n"
-            f"- 神: {char_names[k]}\\n"
-            f"- 誓願: {top_vow_title}\\n"
-            f"- 格言: {selected_quote_text or '（なし）'}"
+            f"共有内容\n"
+            f"- 神: {char_names[k]}\n"
+            f"- 誓願: {top_vow_title}\n"
+            f"- 格言: {selected_quote_text or '（なし）'}\n\n"
+            f"※ QR共有では長文部分を短縮して埋め込みます。画面上の神託本文は全文表示です。"
         ), unsafe_allow_html=True)
 
 else:
